@@ -8,6 +8,39 @@ The project is framed as a **decision-support prototype**, not as a trading bot.
 
 After deployment, add the Streamlit URL here.
 
+## What the dashboard can do now
+
+The Streamlit app supports two market-data modes:
+
+1. **Demo data**: deterministic synthetic data that always works, useful for quick demonstrations.
+2. **Real market data via yfinance**: public ETF/currency proxy data downloaded inside the app and cached for one hour.
+
+Interactive controls include:
+
+- asset universe selection,
+- live-data start and end dates,
+- daily, weekly, or monthly return frequency,
+- transaction-cost assumption,
+- rolling estimation window,
+- maximum asset-weight constraint,
+- mean-variance risk aversion,
+- portfolio rebalancing frequency,
+- custom manual portfolio weights,
+- reserve-utility penalty weights,
+- stress-scenario selection,
+- custom one-day shock design,
+- CSV downloads for metrics, returns, and latest weights.
+
+The app compares:
+
+1. **Equal Weight**
+2. **Static Reserve Benchmark**
+3. **Rolling Minimum Variance**
+4. **Rolling Mean-Variance**
+5. **Your Custom Portfolio**
+
+The DRL environment and PPO training script are included in the repository for the next implementation stage.
+
 ## Project motivation
 
 Central-bank reserve management is not ordinary return maximisation. Reserve portfolios are typically evaluated through institutional objectives such as:
@@ -23,16 +56,22 @@ This project asks whether a constrained deep reinforcement learning agent can le
 
 ## Public proxy assets
 
-The implementation can use public market proxies rather than actual reserve-management data.
+The implementation uses public market proxies rather than actual reserve-management data.
 
 | Asset | Proxy role |
 |---|---|
-| SHY | Short-term US Treasuries proxy |
-| IEF | Intermediate US Treasuries proxy |
-| TLT | Long-duration US Treasuries proxy |
+| BIL | US Treasury bills / cash proxy |
+| SHY | 1-3 year US Treasuries proxy |
+| IEI | 3-7 year US Treasuries proxy |
+| IEF | 7-10 year US Treasuries proxy |
+| TLT | 20+ year US Treasuries proxy |
 | GLD | Gold proxy |
 | FXE | Euro currency proxy |
-| FXY | Japanese yen proxy |
+| FXY | Japanese yen currency proxy |
+| FXB | British pound currency proxy |
+| FXC | Canadian dollar currency proxy |
+| FXA | Australian dollar currency proxy |
+| UUP | US dollar index ETF proxy |
 
 These are only convenient public proxies. They do **not** represent the reserve portfolio of any institution.
 
@@ -41,7 +80,7 @@ These are only convenient public proxies. They do **not** represent the reserve 
 The repository currently includes:
 
 1. **Deterministic demo data** so the Streamlit app runs immediately after deployment.
-2. **Public data download utilities** using `yfinance` for later real-market-proxy experiments.
+2. **Live public market data mode** using `yfinance` for real-market-proxy experiments.
 3. **Portfolio benchmarks**: equal weight, static reserve benchmark, rolling minimum variance, and rolling mean-variance.
 4. **Risk metrics**: annualised return, volatility, Sharpe ratio, Sortino ratio, maximum drawdown, Calmar ratio, VaR, expected shortfall, and turnover.
 5. **RL environment**: a custom Gymnasium-compatible `FXReservePortfolioEnv`.
@@ -82,11 +121,10 @@ This is designed to reflect reserve-management discipline rather than pure retur
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python scripts/generate_sample_data.py
 streamlit run app/streamlit_app.py
 ```
 
-The Streamlit app also runs without CSV files because it generates deterministic demo data in memory.
+The Streamlit app also runs without CSV files because it generates deterministic demo data in memory. For live market data, select **Real market data via yfinance** in the sidebar.
 
 ## Train PPO agent
 
@@ -119,7 +157,7 @@ Main file path: app/streamlit_app.py
 app/                 Streamlit dashboard
 configs/             YAML configuration files
 scripts/             Utility scripts
-src/data/            Demo data, public data download, feature engineering
+src/data/            Demo data, live data download, feature engineering
 src/portfolio/       Metrics, constraints, baselines
 src/envs/            Custom Gymnasium environment
 src/agents/          PPO training script
@@ -130,6 +168,7 @@ tests/               Unit tests
 ## Limitations
 
 - Public ETFs and currency proxies are used instead of actual reserve assets.
+- The live data mode depends on public upstream data availability.
 - Transaction costs, liquidity haircuts, and mandate constraints are simplified.
 - The RL model may overfit if used without strict out-of-sample validation.
 - This is not an investment recommendation system.
@@ -139,7 +178,7 @@ tests/               Unit tests
 
 - Add SAC and TD3 agents.
 - Add risk-parity and CVaR-optimisation benchmarks.
-- Add macro-financial features such as rates, inflation, and dollar index proxies.
+- Add FRED macro-financial features such as rates, inflation, and dollar index proxies.
 - Add walk-forward retraining.
 - Add richer stress-testing and attribution analysis.
 - Add model explainability and regime analysis.
