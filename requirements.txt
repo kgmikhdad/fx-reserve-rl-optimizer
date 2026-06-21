@@ -3,5 +3,3 @@ pandas>=3.0
 numpy>=2.4
 plotly>=6.0
 pyyaml>=6.0
-requests>=2.32
-yfinance>=1.4
