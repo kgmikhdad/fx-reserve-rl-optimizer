@@ -1,0 +1,11 @@
+algorithm: PPO
+policy: MlpPolicy
+total_timesteps: 50000
+learning_rate: 0.0003
+gamma: 0.99
+seed: 42
+reward:
+  lambda_vol: 0.5
+  lambda_drawdown: 1.0
+  lambda_turnover: 0.1
+  lambda_concentration: 0.05
