@@ -1,0 +1,9 @@
+assets:
+  SHY: Short-term US Treasuries proxy
+  IEF: Intermediate US Treasuries proxy
+  TLT: Long-duration US Treasuries proxy
+  GLD: Gold proxy
+  FXE: Euro currency proxy
+  FXY: Japanese yen currency proxy
+start_date: "2010-01-01"
+end_date: null
