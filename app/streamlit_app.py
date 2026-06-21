@@ -22,6 +22,7 @@ from src.data.market_data import (  # noqa: E402
     asset_roles,
     data_quality_summary,
     fetch_market_dataset,
+    parse_ticker_text,
 )
 from src.portfolio.baselines import (  # noqa: E402
     equal_weight,
@@ -45,13 +46,19 @@ STRESS_LIBRARY: dict[str, dict[str, float]] = {
         "IEI": -0.006,
         "IEF": -0.010,
         "TLT": -0.030,
+        "GOVT": -0.010,
+        "AGG": -0.012,
+        "BND": -0.012,
         "GLD": 0.006,
+        "IAU": 0.006,
         "FXE": -0.004,
         "FXY": 0.003,
         "FXB": -0.006,
         "FXC": -0.006,
         "FXA": -0.008,
         "UUP": 0.006,
+        "SPY": -0.025,
+        "ACWX": -0.030,
     },
     "USD liquidity squeeze": {
         "BIL": 0.0005,
@@ -59,13 +66,19 @@ STRESS_LIBRARY: dict[str, dict[str, float]] = {
         "IEI": 0.0015,
         "IEF": 0.002,
         "TLT": 0.004,
+        "GOVT": 0.002,
+        "AGG": 0.000,
+        "BND": 0.000,
         "GLD": -0.006,
+        "IAU": -0.006,
         "FXE": -0.018,
         "FXY": -0.012,
         "FXB": -0.016,
         "FXC": -0.014,
         "FXA": -0.020,
         "UUP": 0.020,
+        "SPY": -0.030,
+        "ACWX": -0.035,
     },
     "Gold selloff": {
         "BIL": 0.0000,
@@ -73,13 +86,19 @@ STRESS_LIBRARY: dict[str, dict[str, float]] = {
         "IEI": 0.001,
         "IEF": 0.001,
         "TLT": 0.002,
+        "GOVT": 0.001,
+        "AGG": 0.001,
+        "BND": 0.001,
         "GLD": -0.050,
+        "IAU": -0.050,
         "FXE": -0.002,
         "FXY": -0.002,
         "FXB": -0.002,
         "FXC": -0.002,
         "FXA": -0.002,
         "UUP": 0.002,
+        "SPY": 0.000,
+        "ACWX": 0.000,
     },
     "Broad risk-off shock": {
         "BIL": 0.0005,
@@ -87,13 +106,19 @@ STRESS_LIBRARY: dict[str, dict[str, float]] = {
         "IEI": 0.003,
         "IEF": 0.004,
         "TLT": 0.008,
+        "GOVT": 0.003,
+        "AGG": 0.000,
+        "BND": 0.000,
         "GLD": 0.010,
+        "IAU": 0.010,
         "FXE": -0.012,
         "FXY": 0.006,
         "FXB": -0.010,
         "FXC": -0.012,
         "FXA": -0.016,
         "UUP": 0.010,
+        "SPY": -0.040,
+        "ACWX": -0.045,
     },
     "Foreign-currency depreciation": {
         "BIL": 0.0000,
@@ -101,13 +126,19 @@ STRESS_LIBRARY: dict[str, dict[str, float]] = {
         "IEI": 0.0000,
         "IEF": 0.0000,
         "TLT": 0.0000,
+        "GOVT": 0.0000,
+        "AGG": 0.0000,
+        "BND": 0.0000,
         "GLD": 0.0000,
+        "IAU": 0.0000,
         "FXE": -0.025,
         "FXY": -0.025,
         "FXB": -0.025,
         "FXC": -0.025,
         "FXA": -0.025,
         "UUP": 0.015,
+        "SPY": 0.0000,
+        "ACWX": 0.0000,
     },
 }
 
@@ -129,6 +160,17 @@ def load_live_data(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Fetch and cache public market data for the app."""
     return fetch_market_dataset(list(assets), start=start, end=end, frequency=frequency)
+
+
+def unique_assets(*groups: list[str]) -> list[str]:
+    """Return unique non-empty ticker/asset labels while preserving user order."""
+    output: list[str] = []
+    for group in groups:
+        for asset in group:
+            clean = asset.strip().upper()
+            if clean and clean not in output:
+                output.append(clean)
+    return output
 
 
 def line_chart(df: pd.DataFrame, title: str, y_label: str) -> go.Figure:
@@ -291,14 +333,25 @@ if data_source == "Demo data":
     source_note = "Synthetic deterministic demo data generated inside the app."
 else:
     role_lookup = asset_roles()
-    selected_assets = st.sidebar.multiselect(
-        "Live public proxy assets",
+    catalog_assets = st.sidebar.multiselect(
+        "Built-in public proxy assets",
         list(ASSET_CATALOG.keys()),
         default=["BIL", "SHY", "IEF", "TLT", "GLD", "FXE", "FXY"],
-        help="These are public ETF/currency proxies, not actual central-bank reserve holdings.",
+        help="This search box filters only the built-in proxy catalogue. Use the custom ticker box below for any Yahoo Finance symbol.",
     )
-    if len(selected_assets) < 2:
-        st.sidebar.error("Select at least two assets to run the simulator.")
+    custom_ticker_text = st.sidebar.text_input(
+        "Add custom Yahoo Finance tickers",
+        value="",
+        placeholder="Example: SPY, AGG, EURUSD=X, GC=F",
+        help="Type comma- or space-separated Yahoo Finance tickers. Examples: SPY, AGG, EURUSD=X, JPY=X, GC=F, ^TNX.",
+    )
+    custom_assets = parse_ticker_text(custom_ticker_text)
+    requested_assets = unique_assets(catalog_assets, custom_assets)
+
+    if custom_assets:
+        st.sidebar.caption(f"Custom tickers requested: {', '.join(custom_assets)}")
+    if len(requested_assets) < 2:
+        st.sidebar.error("Select at least two assets or add at least two valid Yahoo tickers.")
         st.stop()
 
     live_col1, live_col2 = st.sidebar.columns(2)
@@ -310,14 +363,29 @@ else:
         st.error("Start date must be earlier than end date.")
         st.stop()
     try:
-        prices, returns = load_live_data(tuple(selected_assets), start_date, end_date, frequency)
+        prices, returns = load_live_data(tuple(requested_assets), start_date, end_date, frequency)
     except Exception as exc:
         st.error("Live data could not be loaded. Switch to Demo data or try a longer date range.")
+        st.info(
+            "The built-in search box only searches the app's proxy list. For arbitrary data, use "
+            "the custom Yahoo ticker box. Good examples: BIL, SHY, IEF, TLT, GLD, SPY, AGG, EURUSD=X, GC=F."
+        )
         st.exception(exc)
         st.stop()
+
+    selected_assets = list(returns.columns)
+    dropped_assets = [asset for asset in requested_assets if asset not in selected_assets]
+    if dropped_assets:
+        st.warning(
+            "Some requested symbols were not used because no complete price panel was returned: "
+            + ", ".join(dropped_assets)
+        )
+    for asset in selected_assets:
+        role_lookup.setdefault(asset, "Custom Yahoo Finance ticker selected by the user")
     source_note = (
-        "Live public market proxy data downloaded with yfinance. Data availability, licensing, "
-        "and reliability depend on the upstream public source."
+        "Live public market proxy data downloaded with yfinance. The built-in selector searches only "
+        "the predefined proxy catalogue; the custom ticker box fetches arbitrary Yahoo Finance symbols. "
+        "Data availability, licensing, and reliability depend on the upstream public source."
     )
 
 st.sidebar.header("Simulation controls")
