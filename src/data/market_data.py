@@ -1,13 +1,20 @@
-"""Public market-data helpers for the Streamlit app."""
+"""Public market-data helpers for the Streamlit app.
+
+The live-data layer intentionally uses more than one free public source. Yahoo
+Finance access through yfinance can intermittently fail on hosted platforms, so
+ETF-style symbols fall back to Stooq daily CSV data when possible.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from io import StringIO
 from typing import Mapping
 
 import pandas as pd
+import requests
 
-MODULE_VERSION = "2026-06-21-live-data-parser-refresh"
+MODULE_VERSION = "2026-06-21-stooq-fallback"
 
 
 @dataclass(frozen=True)
@@ -39,18 +46,22 @@ ASSET_CATALOG: dict[str, MarketAsset] = {
 }
 
 
+class MarketDataError(RuntimeError):
+    """Raised when no live market-data provider returns a usable panel."""
+
+
 def asset_roles() -> dict[str, str]:
     """Return a user-facing description for each built-in market proxy."""
     return {asset: details.role for asset, details in ASSET_CATALOG.items()}
 
 
 def sanitize_ticker(symbol: str) -> str:
-    """Normalize one Yahoo Finance symbol while preserving suffixes like '=X' and '=F'."""
+    """Normalize one symbol while preserving suffixes like '=X' and '=F'."""
     return symbol.strip().upper()
 
 
 def parse_ticker_text(text: str) -> list[str]:
-    """Parse comma/space/newline-separated ticker text into unique Yahoo symbols."""
+    """Parse comma/space/newline-separated ticker text into unique symbols."""
     if not text:
         return []
     raw_parts = text.replace("\n", ",").replace(";", ",").replace(" ", ",").split(",")
@@ -63,7 +74,7 @@ def parse_ticker_text(text: str) -> list[str]:
 
 
 def ticker_map(assets: list[str]) -> dict[str, str]:
-    """Map selected app asset labels to Yahoo Finance tickers.
+    """Map selected app asset labels to provider symbols.
 
     Built-in catalogue entries are mapped to their configured Yahoo tickers.
     Unknown entries are treated as raw Yahoo Finance ticker symbols. This makes
@@ -79,9 +90,29 @@ def ticker_map(assets: list[str]) -> dict[str, str]:
     return mapping
 
 
+def _standardize_price_panel(prices: pd.DataFrame, min_assets: int = 2) -> pd.DataFrame:
+    """Sort, align, and validate a close-price panel."""
+    if prices.empty:
+        raise MarketDataError("No price data returned by the selected provider.")
+    prices = prices.copy()
+    prices.index = pd.to_datetime(prices.index).tz_localize(None)
+    prices = prices.sort_index()
+    prices = prices.loc[:, ~prices.columns.duplicated()]
+    prices = prices.dropna(axis=1, how="all").ffill().dropna(how="any")
+    if prices.shape[1] < min_assets:
+        raise MarketDataError(
+            "Fewer than two selected assets have usable market data after cleaning. "
+            "Try liquid ETF-style symbols such as BIL, SHY, IEF, TLT, GLD, SPY, or AGG."
+        )
+    if len(prices) < 60:
+        raise MarketDataError("Not enough observations returned. Use a longer date range.")
+    return prices
+
+
 def _extract_close_panel(raw: pd.DataFrame, tickers: list[str]) -> pd.DataFrame:
+    """Extract a close-price panel from yfinance output."""
     if raw.empty:
-        raise ValueError("No market data returned. Check ticker symbols, date range, or the upstream data source.")
+        raise MarketDataError("No market data returned from Yahoo Finance.")
     if isinstance(raw.columns, pd.MultiIndex):
         level_zero = set(raw.columns.get_level_values(0))
         if "Close" in level_zero:
@@ -89,7 +120,7 @@ def _extract_close_panel(raw: pd.DataFrame, tickers: list[str]) -> pd.DataFrame:
         elif "Adj Close" in level_zero:
             close = raw["Adj Close"].copy()
         else:
-            raise ValueError("Could not find Close or Adj Close columns in the returned market data.")
+            raise MarketDataError("Could not find Close or Adj Close columns in Yahoo Finance data.")
     elif "Close" in raw.columns:
         close = raw[["Close"]].copy()
     elif "Adj Close" in raw.columns:
@@ -107,28 +138,111 @@ def fetch_yfinance_prices(asset_tickers: Mapping[str, str], start: date | str, e
     """Download and clean close-price data from Yahoo Finance via yfinance."""
     try:
         import yfinance as yf
-    except ImportError as exc:
-        raise ImportError("Install yfinance to use public market data.") from exc
+    except ImportError as exc:  # pragma: no cover - environment dependent
+        raise MarketDataError("Install yfinance to use Yahoo Finance market data.") from exc
 
     tickers = list(asset_tickers.values())
-    raw = yf.download(tickers=tickers, start=str(start), end=str(end), auto_adjust=True, progress=False, threads=False)
-    close = _extract_close_panel(raw, tickers)
+    try:
+        raw = yf.download(
+            tickers=tickers,
+            start=str(start),
+            end=str(end),
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+            group_by="column",
+        )
+        close = _extract_close_panel(raw, tickers)
+    except Exception as exc:  # pragma: no cover - upstream/network dependent
+        raise MarketDataError(f"Yahoo Finance download failed: {exc}") from exc
 
     reverse_map = {ticker: asset for asset, ticker in asset_tickers.items()}
     prices = close.rename(columns=reverse_map)
     selected_columns = [asset for asset in asset_tickers if asset in prices.columns]
     prices = prices.loc[:, selected_columns]
-    prices.index = pd.to_datetime(prices.index).tz_localize(None)
-    prices = prices.sort_index().dropna(how="all").ffill().dropna(how="any")
+    return _standardize_price_panel(prices)
 
-    if prices.shape[1] < 2:
-        raise ValueError(
-            "Fewer than two selected assets have usable market data. "
-            "Try liquid symbols such as BIL, SHY, IEF, TLT, GLD, SPY, EURUSD=X, or GC=F."
+
+def yahoo_to_stooq_symbol(yahoo_symbol: str) -> str | None:
+    """Convert simple US ETF/equity Yahoo symbols to Stooq symbols.
+
+    Stooq's daily CSV endpoint usually uses symbols such as `spy.us`, `tlt.us`,
+    and `gld.us`. Complex Yahoo symbols like EURUSD=X, GC=F, or ^TNX are not
+    translated here; those should use yfinance.
+    """
+    symbol = sanitize_ticker(yahoo_symbol)
+    if not symbol or any(marker in symbol for marker in ("=", "^", "/")):
+        return None
+    if not symbol.replace("-", "").replace(".", "").isalnum():
+        return None
+    return f"{symbol.lower()}.us"
+
+
+def _stooq_url(stooq_symbol: str, start: date | str, end: date | str) -> str:
+    start_str = pd.to_datetime(start).strftime("%Y%m%d")
+    end_str = pd.to_datetime(end).strftime("%Y%m%d")
+    return f"https://stooq.com/q/d/l/?s={stooq_symbol}&d1={start_str}&d2={end_str}&i=d"
+
+
+def fetch_stooq_prices(asset_tickers: Mapping[str, str], start: date | str, end: date | str) -> pd.DataFrame:
+    """Download close prices from Stooq for simple ETF/equity symbols.
+
+    This is a fallback for hosted deployments where yfinance/Yahoo Finance is
+    unavailable. It supports the reserve-proxy ETF universe well, but not every
+    Yahoo Finance symbol.
+    """
+    series_by_asset: dict[str, pd.Series] = {}
+    errors: list[str] = []
+    headers = {"User-Agent": "Mozilla/5.0 fx-reserve-rl-optimizer"}
+
+    for asset, yahoo_symbol in asset_tickers.items():
+        stooq_symbol = yahoo_to_stooq_symbol(yahoo_symbol)
+        if stooq_symbol is None:
+            errors.append(f"{asset}: no Stooq mapping for {yahoo_symbol}")
+            continue
+        url = _stooq_url(stooq_symbol, start, end)
+        try:
+            response = requests.get(url, timeout=20, headers=headers)
+            response.raise_for_status()
+            frame = pd.read_csv(StringIO(response.text))
+            if frame.empty or "Date" not in frame.columns or "Close" not in frame.columns:
+                errors.append(f"{asset}: Stooq returned no close-price data")
+                continue
+            frame["Date"] = pd.to_datetime(frame["Date"])
+            close = pd.Series(frame["Close"].astype(float).to_numpy(), index=frame["Date"], name=asset)
+            if close.dropna().empty:
+                errors.append(f"{asset}: Stooq close prices are empty")
+                continue
+            series_by_asset[asset] = close
+        except Exception as exc:  # pragma: no cover - upstream/network dependent
+            errors.append(f"{asset}: {exc}")
+            continue
+
+    if len(series_by_asset) < 2:
+        detail = "; ".join(errors[:8])
+        raise MarketDataError(
+            "Stooq fallback could not build a usable price panel. "
+            "Use ETF-style tickers such as BIL, SHY, IEF, TLT, GLD, SPY, AGG. "
+            f"Details: {detail}"
         )
-    if len(prices) < 60:
-        raise ValueError("Not enough observations returned. Use a longer date range.")
-    return prices
+    prices = pd.concat(series_by_asset.values(), axis=1)
+    return _standardize_price_panel(prices)
+
+
+def fetch_prices_with_fallback(asset_tickers: Mapping[str, str], start: date | str, end: date | str) -> pd.DataFrame:
+    """Try yfinance first, then Stooq for simple ETF/equity symbols."""
+    errors: list[str] = []
+    try:
+        return fetch_yfinance_prices(asset_tickers, start=start, end=end)
+    except Exception as exc:
+        errors.append(f"Yahoo/yfinance failed: {exc}")
+
+    try:
+        return fetch_stooq_prices(asset_tickers, start=start, end=end)
+    except Exception as exc:
+        errors.append(f"Stooq fallback failed: {exc}")
+
+    raise MarketDataError("Live data could not be loaded. " + " | ".join(errors))
 
 
 def resample_prices(prices: pd.DataFrame, frequency: str) -> pd.DataFrame:
@@ -148,7 +262,8 @@ def prices_to_returns(prices: pd.DataFrame) -> pd.DataFrame:
 def fetch_market_dataset(
     assets: list[str], start: date | str, end: date | str, frequency: str = "Daily"
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    prices = fetch_yfinance_prices(ticker_map(assets), start=start, end=end)
+    """Fetch a cleaned live price/return panel using free public sources."""
+    prices = fetch_prices_with_fallback(ticker_map(assets), start=start, end=end)
     prices = resample_prices(prices, frequency=frequency)
     returns = prices_to_returns(prices)
     prices = prices.loc[returns.index]
@@ -177,14 +292,18 @@ def data_quality_summary(prices: pd.DataFrame, returns: pd.DataFrame) -> pd.Data
 __all__ = [
     "ASSET_CATALOG",
     "MarketAsset",
+    "MarketDataError",
     "MODULE_VERSION",
     "asset_roles",
     "data_quality_summary",
     "fetch_market_dataset",
+    "fetch_prices_with_fallback",
+    "fetch_stooq_prices",
     "fetch_yfinance_prices",
     "parse_ticker_text",
     "prices_to_returns",
     "resample_prices",
     "sanitize_ticker",
     "ticker_map",
+    "yahoo_to_stooq_symbol",
 ]
