@@ -17,13 +17,57 @@ if str(ROOT) not in sys.path:
 
 from src.data.demo_data import ASSET_ROLES as DEMO_ASSET_ROLES  # noqa: E402
 from src.data.demo_data import demo_dataset  # noqa: E402
-from src.data.market_data import (  # noqa: E402
-    ASSET_CATALOG,
-    asset_roles,
-    data_quality_summary,
-    fetch_market_dataset,
-    parse_ticker_text,
-)
+
+LIVE_DATA_IMPORT_ERROR: Exception | None = None
+try:
+    from src.data.market_data import (  # noqa: E402
+        ASSET_CATALOG,
+        asset_roles,
+        data_quality_summary,
+        fetch_market_dataset,
+        parse_ticker_text,
+    )
+except Exception as exc:  # pragma: no cover - defensive fallback for Streamlit Cloud
+    LIVE_DATA_IMPORT_ERROR = exc
+    ASSET_CATALOG = {}
+
+    def asset_roles() -> dict[str, str]:
+        return {}
+
+    def parse_ticker_text(text: str) -> list[str]:
+        if not text:
+            return []
+        raw_parts = text.replace("\n", ",").replace(";", ",").replace(" ", ",").split(",")
+        tickers: list[str] = []
+        for part in raw_parts:
+            ticker = part.strip().upper()
+            if ticker and ticker not in tickers:
+                tickers.append(ticker)
+        return tickers
+
+    def fetch_market_dataset(
+        assets: list[str], start: date | str, end: date | str, frequency: str = "Daily"
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        raise ImportError("Live market-data support could not be imported in this deployment.") from LIVE_DATA_IMPORT_ERROR
+
+    def data_quality_summary(prices: pd.DataFrame, returns: pd.DataFrame) -> pd.DataFrame:
+        annualization = 252.0 if len(returns) >= 100 else 52.0 if len(returns) > 24 else 12.0
+        rows = []
+        for asset in prices.columns:
+            rows.append(
+                {
+                    "asset": asset,
+                    "first_date": prices[asset].first_valid_index().date(),
+                    "last_date": prices[asset].last_valid_index().date(),
+                    "observations": int(returns[asset].count()),
+                    "missing_prices": int(prices[asset].isna().sum()),
+                    "annualized_return": float(returns[asset].mean() * annualization),
+                    "annualized_volatility": float(returns[asset].std(ddof=0) * annualization**0.5),
+                    "latest_price": float(prices[asset].iloc[-1]),
+                }
+            )
+        return pd.DataFrame(rows).set_index("asset")
+
 from src.portfolio.baselines import (  # noqa: E402
     equal_weight,
     portfolio_returns,
@@ -305,10 +349,14 @@ st.title("FX Reserve Portfolio Optimizer")
 st.caption("Interactive reserve-allocation simulator, live-data dashboard, and DRL project prototype")
 st.warning(DISCLAIMER)
 
+if LIVE_DATA_IMPORT_ERROR is not None:
+    st.sidebar.warning("Live-data module import failed in this deployment. Demo data will still work.")
+
 st.sidebar.header("Data source")
+available_data_sources = ["Demo data", "Real market data via yfinance"]
 data_source = st.sidebar.radio(
     "Choose market-data mode",
-    ["Demo data", "Real market data via yfinance"],
+    available_data_sources,
     help=(
         "Demo data is deterministic and always available. Real market data downloads public "
         "Yahoo Finance proxy data through yfinance and is cached for one hour."
@@ -332,11 +380,16 @@ if data_source == "Demo data":
     returns = returns_all.loc[str(start_date) : str(end_date), selected_assets]
     source_note = "Synthetic deterministic demo data generated inside the app."
 else:
+    if LIVE_DATA_IMPORT_ERROR is not None:
+        st.error("Live market-data support could not be imported. Please use Demo data until the deployment finishes rebuilding.")
+        st.exception(LIVE_DATA_IMPORT_ERROR)
+        st.stop()
+
     role_lookup = asset_roles()
     catalog_assets = st.sidebar.multiselect(
         "Built-in public proxy assets",
         list(ASSET_CATALOG.keys()),
-        default=["BIL", "SHY", "IEF", "TLT", "GLD", "FXE", "FXY"],
+        default=[asset for asset in ["BIL", "SHY", "IEF", "TLT", "GLD", "FXE", "FXY"] if asset in ASSET_CATALOG],
         help="This search box filters only the built-in proxy catalogue. Use the custom ticker box below for any Yahoo Finance symbol.",
     )
     custom_ticker_text = st.sidebar.text_input(
