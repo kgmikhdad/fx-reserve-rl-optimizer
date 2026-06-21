@@ -7,6 +7,8 @@ from typing import Mapping
 
 import pandas as pd
 
+MODULE_VERSION = "2026-06-21-live-data-parser-refresh"
+
 
 @dataclass(frozen=True)
 class MarketAsset:
@@ -43,7 +45,7 @@ def asset_roles() -> dict[str, str]:
 
 
 def sanitize_ticker(symbol: str) -> str:
-    """Normalise one Yahoo Finance symbol while preserving suffixes like '=X' and '=F'."""
+    """Normalize one Yahoo Finance symbol while preserving suffixes like '=X' and '=F'."""
     return symbol.strip().upper()
 
 
@@ -170,3 +172,19 @@ def data_quality_summary(prices: pd.DataFrame, returns: pd.DataFrame) -> pd.Data
             }
         )
     return pd.DataFrame(rows).set_index("asset")
+
+
+__all__ = [
+    "ASSET_CATALOG",
+    "MarketAsset",
+    "MODULE_VERSION",
+    "asset_roles",
+    "data_quality_summary",
+    "fetch_market_dataset",
+    "fetch_yfinance_prices",
+    "parse_ticker_text",
+    "prices_to_returns",
+    "resample_prices",
+    "sanitize_ticker",
+    "ticker_map",
+]
