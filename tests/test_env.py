@@ -17,9 +17,9 @@ def test_fx_reserve_env_step() -> None:
 
     returns = generate_demo_returns(periods=80)
     env = FXReservePortfolioEnv(returns=returns, max_weights=np.repeat(0.6, returns.shape[1]))
-    obs, info = env.reset()
+    obs, _info = env.reset()
     assert obs.shape[0] == returns.shape[1] * 3 + 2
-    next_obs, reward, terminated, truncated, info = env.step(np.ones(returns.shape[1]))
+    next_obs, reward, _terminated, _truncated, info = env.step(np.ones(returns.shape[1]))
     assert next_obs.shape == obs.shape
     assert np.isfinite(reward)
     assert np.isclose(info["weights"].sum(), 1.0)
