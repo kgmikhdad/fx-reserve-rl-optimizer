@@ -2,7 +2,8 @@
 
 The live-data layer intentionally uses more than one free public source. Yahoo
 Finance access through yfinance can intermittently fail on hosted platforms, so
-ETF-style symbols fall back to Stooq daily CSV data when possible.
+ETF-style symbols use Stooq first when possible, with yfinance used as a fallback
+or for Yahoo-only symbols.
 """
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from typing import Mapping
 import pandas as pd
 import requests
 
-MODULE_VERSION = "2026-06-21-stooq-fallback"
+MODULE_VERSION = "2026-06-21-stooq-first"
 
 
 @dataclass(frozen=True)
@@ -74,19 +75,11 @@ def parse_ticker_text(text: str) -> list[str]:
 
 
 def ticker_map(assets: list[str]) -> dict[str, str]:
-    """Map selected app asset labels to provider symbols.
-
-    Built-in catalogue entries are mapped to their configured Yahoo tickers.
-    Unknown entries are treated as raw Yahoo Finance ticker symbols. This makes
-    the Streamlit app usable for custom tickers such as EURUSD=X, GC=F, or SPY.
-    """
+    """Map selected app asset labels to provider symbols."""
     mapping: dict[str, str] = {}
     for asset in assets:
         clean_asset = sanitize_ticker(asset)
-        if clean_asset in ASSET_CATALOG:
-            mapping[clean_asset] = ASSET_CATALOG[clean_asset].ticker
-        else:
-            mapping[clean_asset] = clean_asset
+        mapping[clean_asset] = ASSET_CATALOG[clean_asset].ticker if clean_asset in ASSET_CATALOG else clean_asset
     return mapping
 
 
@@ -151,6 +144,7 @@ def fetch_yfinance_prices(asset_tickers: Mapping[str, str], start: date | str, e
             progress=False,
             threads=False,
             group_by="column",
+            timeout=15,
         )
         close = _extract_close_panel(raw, tickers)
     except Exception as exc:  # pragma: no cover - upstream/network dependent
@@ -164,12 +158,7 @@ def fetch_yfinance_prices(asset_tickers: Mapping[str, str], start: date | str, e
 
 
 def yahoo_to_stooq_symbol(yahoo_symbol: str) -> str | None:
-    """Convert simple US ETF/equity Yahoo symbols to Stooq symbols.
-
-    Stooq's daily CSV endpoint usually uses symbols such as `spy.us`, `tlt.us`,
-    and `gld.us`. Complex Yahoo symbols like EURUSD=X, GC=F, or ^TNX are not
-    translated here; those should use yfinance.
-    """
+    """Convert simple US ETF/equity Yahoo symbols to Stooq symbols."""
     symbol = sanitize_ticker(yahoo_symbol)
     if not symbol or any(marker in symbol for marker in ("=", "^", "/")):
         return None
@@ -185,12 +174,7 @@ def _stooq_url(stooq_symbol: str, start: date | str, end: date | str) -> str:
 
 
 def fetch_stooq_prices(asset_tickers: Mapping[str, str], start: date | str, end: date | str) -> pd.DataFrame:
-    """Download close prices from Stooq for simple ETF/equity symbols.
-
-    This is a fallback for hosted deployments where yfinance/Yahoo Finance is
-    unavailable. It supports the reserve-proxy ETF universe well, but not every
-    Yahoo Finance symbol.
-    """
+    """Download close prices from Stooq for simple ETF/equity symbols."""
     series_by_asset: dict[str, pd.Series] = {}
     errors: list[str] = []
     headers = {"User-Agent": "Mozilla/5.0 fx-reserve-rl-optimizer"}
@@ -221,7 +205,7 @@ def fetch_stooq_prices(asset_tickers: Mapping[str, str], start: date | str, end:
     if len(series_by_asset) < 2:
         detail = "; ".join(errors[:8])
         raise MarketDataError(
-            "Stooq fallback could not build a usable price panel. "
+            "Stooq could not build a usable price panel. "
             "Use ETF-style tickers such as BIL, SHY, IEF, TLT, GLD, SPY, AGG. "
             f"Details: {detail}"
         )
@@ -229,14 +213,29 @@ def fetch_stooq_prices(asset_tickers: Mapping[str, str], start: date | str, end:
     return _standardize_price_panel(prices)
 
 
+def _all_symbols_have_stooq_mapping(asset_tickers: Mapping[str, str]) -> bool:
+    return all(yahoo_to_stooq_symbol(symbol) is not None for symbol in asset_tickers.values())
+
+
 def fetch_prices_with_fallback(asset_tickers: Mapping[str, str], start: date | str, end: date | str) -> pd.DataFrame:
-    """Try yfinance first, then Stooq for simple ETF/equity symbols."""
+    """Try Stooq first for ETF-style symbols, then yfinance as fallback."""
     errors: list[str] = []
+
+    # For the built-in reserve ETF universe, Stooq is usually more reliable on
+    # hosted Streamlit deployments than Yahoo/yfinance, so use it first.
+    if _all_symbols_have_stooq_mapping(asset_tickers):
+        try:
+            return fetch_stooq_prices(asset_tickers, start=start, end=end)
+        except Exception as exc:
+            errors.append(f"Stooq failed: {exc}")
+
     try:
         return fetch_yfinance_prices(asset_tickers, start=start, end=end)
     except Exception as exc:
         errors.append(f"Yahoo/yfinance failed: {exc}")
 
+    # If only some symbols map to Stooq, retry Stooq as a partial fallback. This
+    # can still produce a usable panel when custom Yahoo-only symbols fail.
     try:
         return fetch_stooq_prices(asset_tickers, start=start, end=end)
     except Exception as exc:
