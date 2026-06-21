@@ -1,8 +1,8 @@
 # FX Reserve Portfolio Optimizer using Deep Reinforcement Learning
 
-A research prototype for **stylised foreign-exchange reserve portfolio optimisation** using public market proxies, traditional portfolio benchmarks, and a constrained deep reinforcement learning allocation environment.
+A research prototype for **stylised foreign-exchange reserve portfolio optimisation** using public market proxies, transparent portfolio benchmarks, a constrained reinforcement-learning environment, and a Streamlit dashboard.
 
-The project is framed as a **decision-support prototype** rather than a trading bot. It emphasises reserve-management priorities: **safety, liquidity, diversification, drawdown control, turnover discipline, stress resilience, and transparent benchmark comparison**.
+The project is framed as a **decision-support prototype**, not as a trading bot. It emphasises reserve-management priorities: **safety, liquidity, diversification, drawdown control, turnover discipline, stress resilience, and transparent benchmark comparison**.
 
 ## Live app
 
@@ -23,36 +23,40 @@ This project asks whether a constrained deep reinforcement learning agent can le
 
 ## Public proxy assets
 
-The implementation uses public market proxies rather than actual reserve-management data.
+The implementation can use public market proxies rather than actual reserve-management data.
 
 | Asset | Proxy role |
 |---|---|
-| SHY | Short-term US Treasuries |
-| IEF | Intermediate US Treasuries |
-| TLT | Long-duration US Treasuries |
-| GLD | Gold |
+| SHY | Short-term US Treasuries proxy |
+| IEF | Intermediate US Treasuries proxy |
+| TLT | Long-duration US Treasuries proxy |
+| GLD | Gold proxy |
 | FXE | Euro currency proxy |
 | FXY | Japanese yen proxy |
 
 These are only convenient public proxies. They do **not** represent the reserve portfolio of any institution.
 
-## Methodology
+## Current implementation
 
-The project has five layers:
+The repository currently includes:
 
-1. **Data pipeline**: download or generate price data, compute returns, and build rolling features.
-2. **Benchmark portfolios**: equal weight, static reserve benchmark, rolling minimum variance, and rolling mean-variance.
-3. **RL environment**: a custom Gymnasium-compatible portfolio allocation environment.
-4. **DRL agent**: PPO training using Stable-Baselines3.
-5. **Dashboard**: Streamlit app for visualising data, allocation weights, risk metrics, and stress scenarios.
+1. **Deterministic demo data** so the Streamlit app runs immediately after deployment.
+2. **Public data download utilities** using `yfinance` for later real-market-proxy experiments.
+3. **Portfolio benchmarks**: equal weight, static reserve benchmark, rolling minimum variance, and rolling mean-variance.
+4. **Risk metrics**: annualised return, volatility, Sharpe ratio, Sortino ratio, maximum drawdown, Calmar ratio, VaR, expected shortfall, and turnover.
+5. **RL environment**: a custom Gymnasium-compatible `FXReservePortfolioEnv`.
+6. **PPO training script** using Stable-Baselines3.
+7. **Stress-test scaffold** with illustrative scenario-loss matrix.
+8. **Streamlit dashboard** for data, benchmark, risk, drawdown, allocation, stress-test, and model-explanation views.
+9. **Pytest tests** and a GitHub Actions CI workflow.
 
 ## Reinforcement learning design
 
 At each time step:
 
 ```text
-state_t  -> market and portfolio features
-action_t -> portfolio weights
+state_t  -> recent returns, volatility, momentum, wealth, drawdown
+action_t -> raw action vector projected into feasible long-only portfolio weights
 reward_t -> institutional risk-adjusted reward
 ```
 
@@ -65,7 +69,7 @@ The default reward is:
 ```text
 reward_t = portfolio_return_t
            - lambda_vol * rolling_volatility_t
-           - lambda_drawdown * drawdown_t
+           - lambda_drawdown * abs(drawdown_t)
            - lambda_turnover * turnover_t
            - lambda_concentration * concentration_penalty_t
 ```
@@ -82,14 +86,15 @@ python scripts/generate_sample_data.py
 streamlit run app/streamlit_app.py
 ```
 
+The Streamlit app also runs without CSV files because it generates deterministic demo data in memory.
+
 ## Train PPO agent
 
 ```bash
 python -m src.agents.train_ppo
-python -m src.agents.evaluate_agent
 ```
 
-The Streamlit app is intentionally designed to load precomputed results instead of training inside the web app.
+Training is intentionally separate from the Streamlit app. The deployed dashboard should load lightweight precomputed outputs rather than train models on page load.
 
 ## Tests
 
@@ -113,14 +118,12 @@ Main file path: app/streamlit_app.py
 ```text
 app/                 Streamlit dashboard
 configs/             YAML configuration files
-data/sample/         Synthetic sample data for immediate demo
 scripts/             Utility scripts
-src/data/            Data download, cleaning, feature engineering
-src/portfolio/       Metrics, constraints, baselines, backtester
-src/envs/            Custom RL environment
-src/agents/          PPO training and evaluation scripts
+src/data/            Demo data, public data download, feature engineering
+src/portfolio/       Metrics, constraints, baselines
+src/envs/            Custom Gymnasium environment
+src/agents/          PPO training script
 src/stress/          Stress scenario utilities
-src/utils/           Config, logging, seeding
 tests/               Unit tests
 ```
 
